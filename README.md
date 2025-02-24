@@ -1,2 +1,3 @@
-# examples
-GoFigr examples
+# GoFigr examples
+
+Jupyter: 
