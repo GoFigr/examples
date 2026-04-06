@@ -75,7 +75,8 @@ gofigR::enable(
   workspace_name = "GoFigr Webinar (April 8, 2026)",
   analysis_name = "TCGA Lung Cancer Analysis (LUAD + LUSC)",
   watermark = QR_WATERMARK,
-  auto_assign = TRUE
+  auto_assign = TRUE,
+  url="https://app-dev.gofigr.io"
 )
 ```
 
@@ -113,6 +114,8 @@ if (!file.exists(rds_path)) {
     mode = "wb"
   )
 }
+
+gofigR::sync_file(rds_path)
 
 se <- readRDS(rds_path)
 
@@ -269,7 +272,8 @@ publish(ggplot(de_results, aes(x = log2fc, y = neg_log10p)) +
     subtitle = "Welch t-test on log2(TPM+1); BH-adjusted p-values",
     x = "log2 fold-change (LUSC - LUAD)",
     y = "-log10(adjusted p-value)"
-  ))
+  ),
+  data=de_results)
 ```
 
 ## UMAP

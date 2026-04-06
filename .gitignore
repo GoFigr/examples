@@ -169,3 +169,19 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# GDC / TCGA data (large downloads)
+GDCdata/
+*.rds
+MANIFEST.txt
+
+# Rendered output
+*.html
+*.pdf
+*_files/
+
+# macOS
+.DS_Store
+
+# R
+.Rapp.history
