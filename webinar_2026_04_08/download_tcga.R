@@ -109,7 +109,7 @@ ddr_cellcycle <- c(
   "CDK1", "CDK2", "CDKN1A", "CDKN1B", "CDKN2B",
   "CCNA2", "CCNB1", "PLK1", "AURKA", "AURKB",
   "BUB1", "MAD2L1", "TTK", "CDC20", "CENPE",
-  "E2F1", "E2F3", "FOXM1"
+  "E2F1", "E2F3", "FOXM1", "MKI67", "TOP2A"
 )
 
 # --- Apoptosis & autophagy ---
@@ -125,7 +125,7 @@ immune_tme <- c(
   "CD274", "PDCD1", "PDCD1LG2", "CTLA4", "LAG3", "HAVCR2",
   "TIGIT", "ICOS", "CD28", "IDO1", "VTCN1", "VISTA",
   # T-cell / NK markers
-  "CD3D", "CD3E", "CD4", "CD8A", "CD8B", "FOXP3", "GZMB",
+  "CD3D", "CD3E", "CD4", "CD8A", "CD8B", "FOXP3", "GZMA", "GZMB",
   "PRF1", "IFNG", "TNF", "IL2", "NCAM1", "KLRK1", "NKG7",
   # Myeloid / macrophage
   "CD68", "CD163", "CSF1R", "ITGAM", "ARG1", "NOS2",
