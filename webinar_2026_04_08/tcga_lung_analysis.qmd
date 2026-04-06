@@ -1,5 +1,5 @@
 ---
-title: "TCGA Lung Cancer: LUAD vs LUSC — Molecular Subtypes, Immune Landscape & Clinical Outcomes"
+title: "TCGA Lung Cancer: LUAD vs LUSC"
 author: "GoFigr Webinar"
 format:
   html:
@@ -29,46 +29,17 @@ library(gofigR)
 library(SummarizedExperiment)
 library(ggplot2)
 library(dplyr)
-library(tidyr)
-library(tibble)
-library(pheatmap)
 library(uwot)
 library(survival)
 library(survminer)
 library(ggrepel)
-library(patchwork)
 ```
 
 ## Enabling GoFigr
 
-GoFigr is a figure management platform that automatically captures, versions, and indexes
-every figure you produce. Once enabled, every plot rendered during this session is
-published to GoFigr — no extra calls needed. You can browse, search, and share your
-figures at [app.gofigr.io](https://app.gofigr.io).
-
-To enable GoFigr, we call `gofigR::enable()`. All arguments are optional — called with
-no arguments, `enable()` will read credentials from `~/.gofigr`, infer the workspace
-from your config, and derive the analysis name from the document filename. We list them
-here explicitly to show the key parameters that define a GoFigr session:
-
-- **`workspace_name`** (default: your configured default workspace): The workspace that
-  will contain this analysis. Workspaces are top-level organizational units — think of
-  them like folders or projects. If a workspace with this name doesn't exist yet, GoFigr
-  creates it automatically (controlled by `create_workspace`, which defaults to `TRUE`).
-- **`analysis_name`** (default: inferred from the document filename): The analysis within
-  the workspace. An analysis groups all figures from a single document or experiment.
-  Again, created automatically if it doesn't exist.
-- **`watermark`** (default: `QR_WATERMARK`): Controls what gets overlaid on each figure.
-  `QR_WATERMARK` adds a QR code and link that points back to the figure on GoFigr, so
-  anyone viewing the plot (in a paper, a slide deck, or a colleague's screen) can scan it
-  to find the source data, code, and full revision history. Other options are
-  `LINK_WATERMARK` (text link only) and `NO_WATERMARK`.
-
-Behind the scenes, `enable()` reads your API key from `~/.gofigr` (generated once via
-`gfconfig()`), authenticates with the GoFigr server, and installs hooks that intercept
-`plot()` and `print()` calls to capture figures transparently. It also records the
-execution context — which `.qmd` file produced each figure, which code chunk, and the
-full `sessionInfo()` — so every figure is traceable back to the exact code that created it.
+[GoFigr](https://gofigr.io) automatically captures, versions, and indexes every figure
+you produce. Once enabled, every plot is published — no extra calls needed. Browse and
+share your figures at [app.gofigr.io](https://app.gofigr.io).
 
 ```{r gofigr}
 gofigR::enable(
@@ -80,28 +51,14 @@ gofigR::enable(
 )
 ```
 
-# Data Loading & Preprocessing
+# Data Loading
 
-We work with two TCGA lung cancer cohorts: LUAD (Lung Adenocarcinoma) and LUSC (Lung
-Squamous Cell Carcinoma) — the two most common subtypes of non-small cell lung cancer
-(NSCLC). Together they represent the most extensively characterized lung cancer datasets
-available. The data was downloaded using `TCGAbiolinks` and saved as a Bioconductor
-`SummarizedExperiment` — a container that bundles the expression matrix, gene annotations
-(`rowData`), and clinical metadata (`colData`) into a single object.
-
-The RDS file contains RNA-Seq TPM (transcripts per million) values, already subset to
-~250 curated cancer genes plus the top 1000 most highly expressed genes (for unsupervised
-analyses). The curated genes span driver mutations (EGFR, KRAS, ALK, etc.), immune
-checkpoint and microenvironment markers, major signaling pathways (RTK/RAS, PI3K/AKT,
-Wnt, Hippo, Notch), DNA damage response, EMT, metabolism, and lung-specific
-differentiation markers.
-
-We apply a log2(TPM + 1) transformation, which is standard for RNA-Seq expression
-analysis: it stabilizes variance across the dynamic range and makes fold-changes
-symmetric (a 2-fold increase and 2-fold decrease are equidistant from zero).
+We work with two TCGA lung cancer cohorts: **LUAD** (Lung Adenocarcinoma) and **LUSC**
+(Lung Squamous Cell Carcinoma) — the two most common subtypes of non-small cell lung
+cancer (NSCLC). The data contains RNA-Seq TPM values for ~1200 curated cancer and
+highly-expressed genes across ~1000 tumor samples.
 
 ```{r load-data}
-# Download the pre-built RDS if it doesn't already exist locally
 data_dir <- file.path(getwd(), "data")
 rds_path <- file.path(data_dir, "TCGA-LUNG_TPM_SE_subset.rds")
 
@@ -119,50 +76,31 @@ gofigR::sync_file(rds_path)
 
 se <- readRDS(rds_path)
 
-# Extract expression matrix (TPM from unstranded counts) and log-transform
+# Log-transform and map to gene symbols
 expr_raw <- assay(se, "tpm_unstrand")
-expr_log <- log2(expr_raw + 1)
+expr <- log2(expr_raw + 1)
+rownames(expr) <- make.unique(rowData(se)$gene_name)
 
-# Map to gene symbols, appending suffixes to any duplicates
-gene_names <- rowData(se)$gene_name
-rownames(expr_log) <- make.unique(gene_names)
-
-expr <- expr_log
-
-# Clinical metadata
 clinical <- as.data.frame(colData(se))
 
-cat(sprintf("Samples: %d | Genes: %d\n", ncol(expr), nrow(expr)))
-cat(sprintf("Tumor: %d | Normal: %d\n",
-            sum(clinical$sample_type == "Primary Tumor", na.rm = TRUE),
-            sum(clinical$sample_type == "Solid Tissue Normal", na.rm = TRUE)))
-```
-
-TCGA includes both primary tumor and adjacent normal tissue samples. We restrict to
-primary tumors — adjacent normals have fundamentally different biology and would dominate
-any unsupervised analysis.
-
-```{r filter-tumor}
+# Restrict to primary tumors
 tumor_idx <- clinical$sample_type == "Primary Tumor"
 expr_tumor <- expr[, tumor_idx]
 clin_tumor <- clinical[tumor_idx, ]
 
-cat(sprintf("Tumor samples for analysis: %d\n", ncol(expr_tumor)))
+cat(sprintf("Tumor samples: %d (%d LUAD, %d LUSC) | Genes: %d\n",
+            ncol(expr_tumor),
+            sum(clin_tumor$cohort == "LUAD"),
+            sum(clin_tumor$cohort == "LUSC"),
+            nrow(expr_tumor)))
 ```
 
-# 1. Molecular Subtype Discovery
-
-Our first goal is to see how LUAD and LUSC tumors relate at the transcriptomic level, and
-whether finer-grained subtypes emerge within each histology. We start with PCA and UMAP
-for visualization, then apply k-means clustering to identify discrete subtypes.
+# LUAD vs LUSC: Transcriptomic Differences
 
 ## PCA
 
-Principal Component Analysis projects the high-dimensional expression data down to a
-few axes that capture the most variance. We drop any genes with zero variance before
-fitting, and let `prcomp` center the data (mean = 0 per gene). Since LUAD vs LUSC is a
-major biological effect, we skip z-scaling so that genes with larger dynamic range can
-contribute proportionally.
+PCA projects the high-dimensional expression data onto axes of maximum variance. With
+two distinct cancer types, we expect the dominant axis to separate LUAD from LUSC.
 
 ```{r pca}
 gene_var <- apply(expr_tumor, 1, var, na.rm = TRUE)
@@ -174,26 +112,15 @@ pct_var <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
 pca_df <- data.frame(
   PC1 = pca$x[, 1],
   PC2 = pca$x[, 2],
-  PC3 = pca$x[, 3],
-  stage = clin_tumor$ajcc_pathologic_stage,
-  cohort = clin_tumor$cohort,
-  gender = clin_tumor$gender,
-  vital_status = clin_tumor$vital_status
+  cohort = clin_tumor$cohort
 )
-```
 
-We color by cancer type (LUAD vs LUSC) to see whether the dominant axis of variation
-reflects histological identity — which we expect, given the profound biological
-differences between adenocarcinoma and squamous cell carcinoma.
-
-```{r pca-plot}
 p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = cohort)) +
   geom_point(alpha = 0.6, size = 2) +
   labs(
     x = sprintf("PC1 (%.1f%%)", pct_var[1]),
     y = sprintf("PC2 (%.1f%%)", pct_var[2]),
     title = "PCA of TCGA lung tumors (LUAD + LUSC)",
-    subtitle = "Colored by cancer type",
     color = "Cohort"
   )
 p %>% publish
@@ -201,10 +128,8 @@ p %>% publish
 
 ## Top PCA loadings
 
-The PCA rotation matrix tells us which genes contribute most to each principal component.
-Since PC1 separates LUAD from LUSC, the top loadings should reflect the known biology of
-these histologies — e.g. squamous differentiation markers (keratins, TP63, SOX2) vs
-adenocarcinoma markers (NKX2-1/TTF-1, surfactant proteins, NAPSA).
+The top PC1 loadings reveal what drives the separation: squamous markers (keratins, TP63,
+SOX2) vs adenocarcinoma markers (NKX2-1/TTF-1, surfactant proteins, NAPSA).
 
 ```{r pca-loadings}
 loadings <- as.data.frame(pca$rotation[, 1:3])
@@ -225,14 +150,9 @@ publish({ggplot(top_pc1, aes(x = PC1, y = gene)) +
   )})
 ```
 
-## LUAD vs LUSC: top differentially expressed genes
+## Volcano plot
 
-Since the dominant PCA axis separates cancer types, let's directly quantify the expression
-differences. We compute log2 fold-change (LUSC vs LUAD) and a Welch t-test p-value for
-each gene, then visualize the results as a volcano plot. This validates the PCA loadings
-and highlights the biological basis of the separation: squamous markers (keratins, TP63,
-SOX2) should be upregulated in LUSC, while adenocarcinoma markers (surfactant proteins,
-NKX2-1, NAPSA) should be upregulated in LUAD.
+We directly quantify expression differences with a Welch t-test per gene.
 
 ```{r de-luad-lusc}
 is_luad <- clin_tumor$cohort == "LUAD"
@@ -253,7 +173,6 @@ de_results$direction <- case_when(
   TRUE ~ "NS"
 )
 
-# Label top genes
 top_de <- de_results |>
   filter(direction != "NS") |>
   arrange(desc(abs(log2fc))) |>
@@ -278,15 +197,7 @@ publish(ggplot(de_results, aes(x = log2fc, y = neg_log10p)) +
 
 ## UMAP
 
-PCA is a linear method — it finds the best flat projection. UMAP (Uniform Manifold
-Approximation and Projection) is a non-linear method that preserves local neighborhood
-structure, often revealing clusters that PCA compresses together. We use cosine distance,
-which is standard for expression data because it focuses on the *direction* of the
-expression profile rather than its magnitude.
-
-`n_neighbors = 30` controls the balance between local and global structure (higher values
-preserve more global topology). `min_dist = 0.3` prevents points from collapsing into
-tight clumps, keeping the embedding readable.
+UMAP preserves local neighborhood structure, often revealing clusters that PCA compresses.
 
 ```{r umap}
 set.seed(42)
@@ -295,32 +206,20 @@ umap_res <- umap(t(expr_filt), n_neighbors = 50, min_dist = 0.3, metric = "cosin
 umap_df <- data.frame(
   UMAP1 = umap_res[, 1],
   UMAP2 = umap_res[, 2],
-  stage = clin_tumor$ajcc_pathologic_stage,
-  gender = clin_tumor$gender,
-  cohort = clin_tumor$cohort,
-  vital_status = clin_tumor$vital_status
+  cohort = clin_tumor$cohort
 )
-```
 
-```{r umap-cohort}
 p <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = cohort)) +
   geom_point(alpha = 0.6, size = 2) +
-  labs(title = "UMAP embedding of TCGA lung tumors", subtitle = "Colored by cancer type", color = "Cohort")
+  labs(title = "UMAP embedding of TCGA lung tumors", color = "Cohort")
 publish(p)
 ```
 
 ## K-means clustering
 
-To move from visualization to discrete subtypes, we apply k-means clustering in PCA
-space (first 20 components, which capture the majority of variance while filtering out
-noise in later components). With LUAD and LUSC combined, we expect at minimum two clusters
-reflecting cancer type, with additional clusters capturing within-histology heterogeneity
-(e.g. immune-hot vs immune-cold, or proliferative vs differentiated subtypes).
-
-We wrap this in `reproducible()` so that viewers can experiment with the two key
-parameters — number of clusters (k) and number of PCs — directly in the GoFigr portal,
-without re-running the notebook. The `slider()` calls define interactive widgets; `static()`
-passes in the data without making it editable.
+We apply k-means in PCA space. This is wrapped in `reproducible()` — a GoFigr feature
+that lets viewers adjust k and n_pcs interactively in the portal without re-running the
+notebook.
 
 ```{r kmeans}
 reproducible(function(
@@ -349,341 +248,39 @@ reproducible(function(
   name = "K-means clustering",
   interactive=FALSE
 )
-
-# Store the default clustering for downstream analyses
-set.seed(42)
-km <- kmeans(pca$x[, 1:20], centers = 3, nstart = 25, iter.max = 100)
-umap_df$cluster <- factor(km$cluster)
-clin_tumor$cluster <- factor(km$cluster)
 ```
 
-### Cluster characterization
+# Survival Analysis
 
-Now we ask: what makes each cluster biologically distinct? We compute the mean expression
-of every gene within each cluster, then pick the 50 genes with the highest between-cluster
-variance — these are the genes that most differentiate the subtypes. The heatmap gives an
-at-a-glance view of the molecular identity of each cluster: look for immune genes
-concentrated in one cluster (the "hot" subtype), proliferation markers in another, and
-lung differentiation markers in the third.
+Do these molecular differences predict patient outcomes? We test two well-validated
+prognostic signatures, wrapped in `reproducible()` so viewers can re-stratify by
+clinical covariates (cohort, gender, smoking status, stage) directly in the GoFigr
+portal.
 
-```{r cluster-heatmap}
-cluster_means <- sapply(levels(clin_tumor$cluster), function(cl) {
-  rowMeans(expr_filt[, clin_tumor$cluster == cl], na.rm = TRUE)
-})
-colnames(cluster_means) <- paste0("Cluster ", colnames(cluster_means))
-
-# Top variable genes across clusters
-cluster_var <- apply(cluster_means, 1, var)
-top_genes <- names(sort(cluster_var, decreasing = TRUE))[1:50]
-
-# silent = TRUE suppresses pheatmap's internal plot call, so that only
-# gofigR::publish() draws the figure — otherwise it renders twice.
-pheatmap(
-  cluster_means[top_genes, ],
-  scale = "none",
-  cluster_cols = FALSE,
-  fontsize_row = 8,
-  color = colorRampPalette(c("#2166ac", "white", "#b2182b"))(100),
-  main = "Top 50 cluster-discriminating genes",
-  silent = TRUE
-) %>% publish
-```
-
-# 2. Immune Landscape
-
-The tumor immune microenvironment is one of the most clinically actionable axes in LUAD.
-Immune checkpoint inhibitors (anti-PD-1, anti-PD-L1, anti-CTLA-4) have transformed
-treatment for a subset of patients — but response rates are only 20–30%. Understanding
-which tumors are "immune-hot" (T-cell infiltrated, checkpoint-expressing) vs.
-"immune-cold" (excluded or desert) is key to predicting who will benefit.
-
-## Immune scoring
-
-We define two composite scores using the mean log2(TPM+1) of curated gene sets:
-
-- **Immune activation**: IFNG, GZMB, PRF1, CXCL9, CXCL10, CD8A, CD8B. These are
-  hallmarks of cytotoxic T-cell and NK cell activity. This is closely related to the
-  "cytolytic activity" score from Rooney et al. (Cell, 2015), which has been validated
-  as a predictor of immunotherapy response.
-- **Immune suppression**: IDO1, TGFB1, TGFB2, IL10, ARG1, CD274 (PD-L1), VEGFA. These
-  represent mechanisms tumors use to evade immune attack — checkpoint ligands, suppressive
-  cytokines, and metabolic immune inhibitors.
-
-The `score_genes` helper gracefully handles missing genes (not all ~250 may have mapped
-to the TCGA annotation), taking the mean over whichever genes are available.
-
-```{r immune-scores}
+```{r survival-prep}
 score_genes <- function(expr_mat, genes) {
   available <- genes[genes %in% rownames(expr_mat)]
   if (length(available) == 0) return(rep(NA, ncol(expr_mat)))
   colMeans(expr_mat[available, , drop = FALSE], na.rm = TRUE)
 }
 
-# Cytolytic / immune activation (Rooney et al., Cell 2015)
-activation_genes <- c("IFNG", "GZMB", "PRF1", "CXCL9", "CXCL10", "CD8A", "CD8B")
+prolif_genes <- c("MKI67", "TOP2A", "CCNB1", "CCNA2", "CDK1", "CDK2", "AURKA",
+                  "AURKB", "PLK1", "BUB1", "TTK", "CDC20", "FOXM1", "E2F1", "BIRC5")
 
-# Immunosuppressive markers
-suppression_genes <- c("IDO1", "TGFB1", "TGFB2", "IL10", "ARG1", "CD274", "VEGFA")
+nkx_gene <- intersect(c("NKX2-1", "TTF1"), rownames(expr_tumor))
 
-clin_tumor$immune_activation <- score_genes(expr_tumor, activation_genes)
-clin_tumor$immune_suppression <- score_genes(expr_tumor, suppression_genes)
-```
-
-Plotting activation vs. suppression creates a "landscape" where each tumor occupies a
-position. The positive correlation between the two scores is expected — tumors that
-attract immune cells also upregulate suppressive checkpoints as an adaptive resistance
-mechanism. The clinically interesting samples are those with high activation but low
-suppression (potentially responsive to immunotherapy without additional checkpoint
-blockade), or high suppression with low activation (deeply suppressed microenvironment).
-
-```{r hot-cold-scatter}
-publish({ggplot(clin_tumor, aes(x = immune_activation, y = immune_suppression)) +
-  geom_point(aes(color = cluster), alpha = 0.6, size = 2) +
-  geom_smooth(method = "lm", color = "grey30", linetype = "dashed", se = FALSE) +
-  scale_color_brewer(palette = "Set1") +
-  labs(
-    title = "Immune activation vs. suppression",
-    subtitle = "Each point is a tumor sample; color = cluster",
-    x = "Immune activation score\n(IFNG, GZMB, PRF1, CXCL9, CXCL10, CD8A/B)",
-    y = "Immune suppression score\n(IDO1, TGFB1/2, IL10, ARG1, PD-L1, VEGFA)",
-    color = "Cluster"
-  )})
-```
-
-## Checkpoint expression by cluster
-
-Here we ask which immune checkpoints are most expressed in each transcriptomic cluster.
-This has direct clinical implications: if a cluster co-expresses PD-L1 and LAG-3, that
-suggests dual checkpoint blockade might be warranted. We use common gene symbols and map
-them to their clinical names (e.g. CD274 = PD-L1, HAVCR2 = TIM-3) for readability.
-
-```{r checkpoint-heatmap}
-checkpoints <- c("CD274", "PDCD1", "CTLA4", "LAG3", "HAVCR2", "TIGIT", "IDO1")
-checkpoints_avail <- checkpoints[checkpoints %in% rownames(expr_tumor)]
-
-checkpoint_by_cluster <- sapply(levels(clin_tumor$cluster), function(cl) {
-  rowMeans(expr_tumor[checkpoints_avail, clin_tumor$cluster == cl, drop = FALSE], na.rm = TRUE)
-})
-colnames(checkpoint_by_cluster) <- paste0("Cluster ", colnames(checkpoint_by_cluster))
-
-# Rename for readability
-display_names <- c(
-  CD274 = "PD-L1", PDCD1 = "PD-1", CTLA4 = "CTLA-4",
-  LAG3 = "LAG-3", HAVCR2 = "TIM-3", TIGIT = "TIGIT", IDO1 = "IDO1"
+clin_tumor$os_time <- coalesce(
+  as.numeric(clin_tumor$days_to_death),
+  as.numeric(clin_tumor$days_to_last_follow_up)
 )
-rownames(checkpoint_by_cluster) <- display_names[rownames(checkpoint_by_cluster)]
-
-pheatmap(
-  checkpoint_by_cluster,
-  scale = "row",
-  cluster_cols = FALSE,
-  color = colorRampPalette(c("#2166ac", "white", "#b2182b"))(100),
-  main = "Immune checkpoint expression by cluster",
-  silent = TRUE
-) %>% publish(figure_name = "Immune checkpoint expression by cluster")
-```
-
-## Checkpoint correlations with immune activation
-
-Not all checkpoints are created equal. Some (like PD-1 and CTLA-4) are markers of
-activated T cells and correlate strongly with immune infiltration. Others (like IDO1)
-represent a tumor-intrinsic suppressive program. This bar chart shows Pearson
-correlation of each checkpoint with our immune activation score — highly correlated
-checkpoints are the ones most likely to be co-opted by immune-infiltrated tumors as an
-adaptive resistance strategy.
-
-```{r checkpoint-cor}
-checkpoint_expr <- t(expr_tumor[checkpoints_avail, , drop = FALSE])
-colnames(checkpoint_expr) <- display_names[colnames(checkpoint_expr)]
-
-cor_df <- data.frame(
-  checkpoint = colnames(checkpoint_expr),
-  correlation = sapply(seq_len(ncol(checkpoint_expr)), function(i) {
-    cor(checkpoint_expr[, i], clin_tumor$immune_activation, use = "complete.obs")
-  })
-) |> mutate(checkpoint = reorder(checkpoint, correlation))
-
-publish({ggplot(cor_df, aes(x = correlation, y = checkpoint)) +
-  geom_col(aes(fill = correlation), show.legend = FALSE) +
-  scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b", midpoint = 0) +
-  geom_vline(xintercept = 0, linetype = "dashed") +
-  labs(
-    title = "Checkpoint correlation with immune activation",
-    subtitle = "Pearson r across tumor samples",
-    x = "Correlation with immune activation score",
-    y = NULL
-  )})
-```
-
-# 3. Oncogenic Pathway Crosstalk
-
-Cancer is not driven by single genes in isolation — it's the interplay between signaling
-pathways that determines tumor phenotype and treatment vulnerability. Here we score each
-sample across 8 major pathway categories using mean log2(TPM+1) expression, then ask
-which pathways tend to co-activate (positive correlation) or are mutually exclusive
-(negative correlation) across tumors.
-
-## Pathway scoring
-
-For each pathway, we compute a composite score as the mean log2(TPM+1) expression of its
-constituent genes. This is a simple but robust approach: it's less noisy than any single
-gene, it's interpretable, and it correlates well with more sophisticated methods like
-GSVA or ssGSEA for well-curated gene sets of this size.
-
-```{r pathway-scores}
-pathway_lists <- list(
-  `RTK/RAS/MAPK` = c("EGFR", "KRAS", "BRAF", "ERBB2", "MET", "ALK", "ROS1",
-                      "NF1", "MAPK1", "MAPK3", "SOS1", "GRB2"),
-  `PI3K/AKT/mTOR` = c("PIK3CA", "PIK3CB", "PIK3R1", "AKT1", "AKT2", "MTOR",
-                       "PTEN", "TSC1", "TSC2", "RICTOR", "RPTOR"),
-  `Wnt` = c("CTNNB1", "APC", "GSK3B", "AXIN1", "LEF1", "TCF7L2",
-            "WNT3A", "WNT5A", "WNT7A", "FZD7"),
-  `DDR/Cell Cycle` = c("ATM", "ATR", "CHEK1", "CHEK2", "PARP1", "CDK1", "CDK2",
-                        "CCNA2", "CCNB1", "PLK1", "AURKA", "E2F1", "FOXM1"),
-  `Immune` = c("IFNG", "GZMB", "PRF1", "CD8A", "CD274", "PDCD1",
-               "CTLA4", "CXCL9", "CXCL10", "TNF"),
-  `EMT` = c("CDH1", "CDH2", "VIM", "SNAI1", "SNAI2", "ZEB1", "ZEB2",
-            "TWIST1", "FN1", "MMP2", "MMP9"),
-  `Apoptosis` = c("BAX", "BAK1", "BCL2", "BCL2L1", "MCL1", "CASP3",
-                  "CASP8", "CASP9", "BIRC5", "XIAP"),
-  `Metabolism` = c("HK2", "PKM", "LDHA", "SLC2A1", "FASN", "ACLY",
-                   "GLS", "SLC7A11", "GPX4", "NFE2L2")
-)
-
-pathway_scores <- sapply(pathway_lists, function(genes) {
-  score_genes(expr_filt, genes)
-})
-
-clin_tumor <- cbind(clin_tumor, as.data.frame(pathway_scores, check.names = FALSE))
-```
-
-## Pathway correlation heatmap
-
-The correlation matrix reveals the dependencies between oncogenic programs. Key patterns
-to look for:
-
-- **DDR/Cell Cycle and Metabolism**: often co-activated in aggressive, proliferative
-  tumors that upregulate glycolysis (the Warburg effect) to fuel rapid division.
-- **Immune and EMT**: the relationship here previews our analysis in Section 4. EMT
-  (epithelial-to-mesenchymal transition) is associated with immune exclusion.
-- **RTK/RAS/MAPK and PI3K/AKT**: these are parallel signaling cascades downstream of
-  receptor tyrosine kinases. Co-activation suggests redundancy that may explain
-  resistance to single-pathway inhibitors.
-
-```{r pathway-cor-heatmap}
-pathway_cor <- cor(pathway_scores, use = "pairwise.complete.obs")
-
-pheatmap(
-  pathway_cor,
-  color = colorRampPalette(c("#2166ac", "white", "#b2182b"))(100),
-  breaks = seq(-1, 1, length.out = 101),
-  display_numbers = TRUE,
-  number_format = "%.2f",
-  fontsize_number = 9,
-  main = "Pathway co-activation across lung tumors (LUAD + LUSC)",
-  silent = TRUE
-) %>% publish
-```
-
-## KRAS/STK11/KEAP1 axis
-
-The co-occurrence of KRAS activation with STK11 and KEAP1 loss defines the most
-treatment-resistant LUAD subgroup, characterized by immune exclusion and
-metabolic rewiring (Skoulidis et al., Cancer Discovery 2015). This axis is specific to
-LUAD biology — KRAS mutations are rare in LUSC — so we restrict this analysis to LUAD
-samples only.
-
-The median split for "KRAS-high" and "STK11-low" is a common but arbitrary choice. We
-use `reproducible()` with percentile sliders so viewers can test how sensitive the immune
-exclusion finding is to different cutoff definitions.
-
-```{r kras-stk11-keap1}
-# Restrict to LUAD — KRAS/STK11 axis is LUAD-specific
-luad_idx <- clin_tumor$cohort == "LUAD"
-expr_luad <- expr_tumor[, luad_idx]
-clin_luad <- clin_tumor[luad_idx, ]
-
-axis_genes <- c("KRAS", "STK11", "KEAP1")
-axis_avail <- axis_genes[axis_genes %in% rownames(expr_luad)]
-
-axis_df <- data.frame(
-  t(expr_luad[axis_avail, , drop = FALSE]),
-  immune_activation = clin_luad$immune_activation,
-  cluster = clin_luad$cluster,
-  check.names = FALSE
-)
-
-if (all(c("KRAS", "STK11") %in% axis_avail)) {
-  reproducible(function(
-      kras_percentile = slider(50, min = 25, max = 75, step = 5),
-      stk11_percentile = slider(50, min = 25, max = 75, step = 5),
-      data = static(axis_df)
-    ) {
-      kras_thresh <- quantile(data$KRAS, kras_percentile / 100, na.rm = TRUE)
-      stk11_thresh <- quantile(data$STK11, stk11_percentile / 100, na.rm = TRUE)
-
-      data$subgroup <- case_when(
-        data$KRAS > kras_thresh & data$STK11 < stk11_thresh ~ "KRAS-high\nSTK11-low",
-        data$KRAS > kras_thresh ~ "KRAS-high\nSTK11-intact",
-        TRUE ~ "KRAS-low"
-      )
-
-      publish(
-        ggplot(data, aes(x = subgroup, y = immune_activation, fill = subgroup)) +
-          geom_boxplot(outlier.alpha = 0.4) +
-          geom_jitter(width = 0.2, alpha = 0.2, size = 1) +
-          scale_fill_brewer(palette = "Set2") +
-          labs(
-            title = "Immune activation by KRAS/STK11 subgroup (LUAD only)",
-            subtitle = sprintf("KRAS > %dth %%ile, STK11 < %dth %%ile",
-                               kras_percentile, stk11_percentile),
-            x = NULL,
-            y = "Immune activation score"
-          ) +
-          theme(legend.position = "none"),
-        figure_name = "KRAS/STK11 immune exclusion"
-      )
-    },
-    packages = c("ggplot2", "dplyr"),
-    name = "KRAS/STK11 subgroup analysis"
-  )
+clin_tumor$os_event <- as.integer(clin_tumor$vital_status == "Dead")
+clin_tumor$sample_id <- colnames(expr_tumor)
+clin_tumor$proliferation <- score_genes(expr_tumor, prolif_genes)
+if (length(nkx_gene) > 0) {
+  clin_tumor$nkx2_1 <- as.numeric(expr_tumor[nkx_gene[1], ])
 }
-```
 
-# 4. EMT-Immune Exclusion Axis
-
-Epithelial-to-mesenchymal transition (EMT) is a developmental program that cancer cells
-co-opt to become more invasive and migratory. A growing body of evidence shows that
-mesenchymal tumors also tend to exclude cytotoxic T cells from the tumor bed (Thompson
-et al., Cancer Immunol Res 2020; Dongre & Weinberg, Nat Rev Mol Cell Biol 2019). This
-has major implications for immunotherapy: if EMT drives immune exclusion, then reversing
-EMT (or targeting the mesenchymal state) could sensitize tumors to checkpoint blockade.
-
-We construct an EMT score as the difference between mesenchymal marker expression (CDH2/
-N-cadherin, VIM/Vimentin, ZEB1, ZEB2, SNAI1/Snail, SNAI2/Slug, FN1/Fibronectin) and
-epithelial marker expression (CDH1/E-cadherin). High values indicate a mesenchymal
-phenotype; low values indicate an epithelial phenotype.
-
-Crucially, we must analyze LUAD and LUSC separately here. LUSC is a squamous carcinoma —
-inherently more mesenchymal with high keratins and distinct differentiation programs. Pooling
-the two would produce a spurious EMT-immune correlation driven entirely by histological
-differences rather than within-tumor biology.
-
-For the immune side, we use a focused CD8+ T-cell cytotoxicity score: CD8A, CD8B (T-cell
-co-receptor), GZMB (granzyme B, the effector protease), and PRF1 (perforin, the pore-
-forming protein). Together these capture whether cytotoxic T cells are not just present
-but actively armed.
-
-```{r emt-score}
-mesenchymal <- c("CDH2", "VIM", "ZEB1", "ZEB2", "SNAI1", "SNAI2", "FN1")
-epithelial <- c("CDH1")
-
-clin_tumor$emt_score <- score_genes(expr_tumor, mesenchymal) -
-                        score_genes(expr_tumor, epithelial)
-
-cd8_genes <- c("CD8A", "CD8B", "GZMB", "PRF1")
-clin_tumor$cd8_score <- score_genes(expr_tumor, cd8_genes)
-
+# Simplify clinical covariates
 clin_tumor$stage_simple <- case_when(
   grepl("Stage I[^IV]|Stage IA|Stage IB|^Stage I$", clin_tumor$ajcc_pathologic_stage) ~ "I",
   grepl("Stage II", clin_tumor$ajcc_pathologic_stage) ~ "II",
@@ -691,73 +288,33 @@ clin_tumor$stage_simple <- case_when(
   grepl("Stage IV", clin_tumor$ajcc_pathologic_stage) ~ "IV",
   TRUE ~ NA_character_
 )
-```
 
-```{r emt-immune-scatter}
-# Compute per-cohort correlations for subtitles
-emt_cor <- clin_tumor |>
-  group_by(cohort) |>
-  summarise(
-    r = cor(emt_score, cd8_score, use = "complete.obs"),
-    p = cor.test(emt_score, cd8_score)$p.value,
-    .groups = "drop"
-  ) |>
-  mutate(label = sprintf("r = %.2f (p = %.2g)", r, p))
-
-publish(ggplot(clin_tumor, aes(x = emt_score, y = cd8_score)) +
-  geom_point(aes(color = cluster), alpha = 0.5, size = 2) +
-  geom_smooth(method = "lm", color = "grey20", se = TRUE) +
-  scale_color_brewer(palette = "Set1") +
-  facet_wrap(~cohort) +
-  geom_text(data = emt_cor, aes(label = label),
-            x = -Inf, y = Inf, hjust = -0.1, vjust = 1.5, size = 3.5,
-            inherit.aes = FALSE) +
-  labs(
-    title = "EMT score vs. CD8+ T-cell infiltration",
-    subtitle = "Faceted by cancer type to avoid confounding by histology",
-    x = "EMT score (mesenchymal - epithelial)",
-    y = "CD8+ T-cell score (CD8A/B, GZMB, PRF1)",
-    color = "Cluster"
-  ))
-```
-
-# 5. Survival Analysis
-
-Everything so far has been molecular characterization — interesting biology, but the
-"so what?" for a clinical audience is whether any of it predicts patient outcomes. TCGA
-provides overall survival (OS) data: `days_to_death` for deceased patients and
-`days_to_last_follow_up` for censored (still alive at last contact) patients.
-
-We focus on two of the most robustly validated prognostic signatures in NSCLC:
-
-1. **Proliferation score** — a mitotic gene index based on cell-cycle regulators. This
-   is consistently the strongest transcriptomic predictor of survival across NSCLC subtypes
-   (Gentles et al., Nat Med 2015). High proliferation = poor prognosis.
-2. **NKX2-1/TRU differentiation** (LUAD only) — NKX2-1 (TTF-1) expression marks the
-   Terminal Respiratory Unit (TRU) subtype identified in the TCGA LUAD landmark paper
-   (Cancer Genome Atlas Research Network, Nature 2014). TRU tumors retain alveolar
-   differentiation and have significantly better outcomes. NKX2-1 is the single most
-   validated prognostic gene in LUAD (Barletta et al., JCO 2009).
-
-Since LUAD and LUSC have different baseline prognoses and biology, we analyze each
-cancer type separately.
-
-## Prepare survival data
-
-We combine `days_to_death` and `days_to_last_follow_up` into a single overall survival
-time, and code the event indicator from `vital_status`. Samples missing survival data
-or with non-positive follow-up are excluded.
-
-```{r survival-prep}
-clin_tumor$os_time <- coalesce(
-  as.numeric(clin_tumor$days_to_death),
-  as.numeric(clin_tumor$days_to_last_follow_up)
+clin_tumor$smoking <- case_when(
+  clin_tumor$tobacco_smoking_status == "Lifelong Non-Smoker" ~ "Never",
+  grepl("Current Smoker", clin_tumor$tobacco_smoking_status) ~ "Current",
+  grepl("Reformed", clin_tumor$tobacco_smoking_status) ~ "Former",
+  TRUE ~ NA_character_
 )
-clin_tumor$os_event <- as.integer(clin_tumor$vital_status == "Dead")
-clin_tumor$sample_id <- colnames(expr_tumor)
 
-# Filter to samples with valid survival data
-surv_df <- clin_tumor |>
+clin_tumor$age_group <- ifelse(
+  as.numeric(clin_tumor$age_at_diagnosis) / 365.25 >= 67,
+  ">=67", "<67"
+)
+
+# Build a clean survival data frame with only the columns we need —
+# the full colData has list/raw columns that can't be serialized by reproducible()
+surv_df <- data.frame(
+  sample_id = clin_tumor$sample_id,
+  cohort = clin_tumor$cohort,
+  gender = clin_tumor$gender,
+  stage_simple = clin_tumor$stage_simple,
+  smoking = clin_tumor$smoking,
+  os_time = clin_tumor$os_time,
+  os_event = clin_tumor$os_event,
+  proliferation = clin_tumor$proliferation,
+  nkx2_1 = if (length(nkx_gene) > 0) clin_tumor$nkx2_1 else NA_real_,
+  stringsAsFactors = FALSE
+) |>
   filter(!is.na(os_time), os_time > 0, !is.na(os_event))
 
 cat(sprintf("Samples with survival data: %d (events: %d)\n",
@@ -767,166 +324,112 @@ cat(sprintf("Samples with survival data: %d (events: %d)\n",
 ## Proliferation score
 
 The proliferation (mitotic index) score is the most robust transcriptomic prognostic
-marker in solid tumors. We compute it as the mean log2(TPM+1) of core cell-cycle and
-mitotic genes — these capture the tumor's intrinsic proliferative rate and, indirectly,
-TP53 functional status (Whitfield et al., Mol Biol Cell 2002; Gentles et al., Nat Med
-2015).
-
-```{r proliferation-score}
-prolif_genes <- c("MKI67", "TOP2A", "CCNB1", "CCNA2", "CDK1", "CDK2", "AURKA",
-                  "AURKB", "PLK1", "BUB1", "TTK", "CDC20", "FOXM1", "E2F1", "BIRC5")
-
-surv_df$proliferation <- score_genes(expr_tumor[, surv_df$sample_id], prolif_genes)
-
-cat(sprintf("Proliferation score uses %d / %d genes\n",
-            sum(prolif_genes %in% rownames(expr_tumor)), length(prolif_genes)))
-```
-
-We split at the cohort-specific median to produce Kaplan-Meier curves. The expected
-result: high-proliferation tumors have significantly worse OS in both LUAD and LUSC.
+marker in solid tumors (Gentles et al., Nat Med 2015). High proliferation = poor
+prognosis. Use the dropdowns to explore how the effect varies by clinical subgroup.
 
 ```{r km-proliferation}
-surv_df <- surv_df |>
-  group_by(cohort) |>
-  mutate(prolif_group = ifelse(
-    proliferation > median(proliferation, na.rm = TRUE),
-    "High", "Low"
-  )) |>
-  ungroup()
+reproducible(function(
+    cohort = dropdown("LUAD", choices = c("LUAD", "LUSC", "Both")),
+    gender = dropdown("All", choices = c("All", "male", "female")),
+    smoking = dropdown("All", choices = c("All", "Never", "Former", "Current")),
+    stage = dropdown("All", choices = c("All", "I", "II", "III", "IV")),
+    data = static(surv_df)
+  ) {
+    df <- data
+    if (cohort != "Both") df <- df[df$cohort == cohort, ]
+    if (gender != "All") df <- df[df$gender == gender, ]
+    if (smoking != "All") df <- df[!is.na(df$smoking) & df$smoking == smoking, ]
+    if (stage != "All") df <- df[!is.na(df$stage_simple) & df$stage_simple == stage, ]
 
-for (coh in c("LUAD", "LUSC")) {
-  df <- surv_df |> filter(cohort == coh)
-  fit <- survfit(Surv(os_time, os_event) ~ prolif_group, data = df)
-  ggsurvplot(
-    fit, data = df, pval = TRUE, risk.table = TRUE,
-    palette = c("#c0392b", "#2980b9"),
-    title = sprintf("Overall survival by proliferation score (%s)", coh),
-    xlab = "Days", ylab = "Survival probability",
-    legend.title = "Proliferation",
-    risk.table.height = 0.25,
-    ggtheme = theme_minimal(base_size = 14)
-  ) %>% publish
-}
+    df$group <- ifelse(
+      df$proliferation > median(df$proliferation, na.rm = TRUE),
+      "High", "Low"
+    )
+
+    subtitle <- paste(c(
+      cohort,
+      if (gender != "All") gender,
+      if (smoking != "All") paste0(smoking, " smoker"),
+      if (stage != "All") paste0("Stage ", stage)
+    ), collapse = " | ")
+
+    fit <- survfit(Surv(os_time, os_event) ~ group, data = df)
+    publish(
+      ggsurvplot(
+        fit, data = df, pval = TRUE, risk.table = FALSE,
+        palette = c("#c0392b", "#2980b9"),
+        title = "Overall survival by proliferation score",
+        subtitle = sprintf("%s (n=%d)", subtitle, nrow(df)),
+        xlab = "Days", ylab = "Survival probability",
+        legend.title = "Proliferation",
+        risk.table.height = 0.25,
+        ggtheme = theme_minimal(base_size = 14)
+      ),
+      figure_name = "Survival by proliferation"
+    )
+  },
+  packages = c("survival", "survminer", "ggplot2"),
+  name = "Proliferation survival",
+  interactive = FALSE
+)
 ```
 
-## NKX2-1 (TTF-1) expression in LUAD
+## NKX2-1 (TTF-1) in LUAD
 
-NKX2-1 is the master transcription factor of alveolar differentiation. In LUAD, high
-NKX2-1 expression marks the TRU subtype — well-differentiated tumors that retain alveolar
-identity and have the best prognosis. Loss of NKX2-1 is associated with de-differentiation,
-invasiveness, and poor outcomes (Winslow et al., Nature 2011).
-
-This is LUAD-specific: NKX2-1 is silenced in LUSC (squamous tumors use TP63/SOX2 for
-lineage identity instead).
+NKX2-1 is the master transcription factor of alveolar differentiation and the single most
+validated prognostic gene in LUAD (Barletta et al., JCO 2009). High NKX2-1 marks the TRU
+(Terminal Respiratory Unit) subtype — well-differentiated tumors with the best outcomes.
+NKX2-1 is silenced in LUSC, so this defaults to LUAD-only.
 
 ```{r km-nkx2-1}
-# NKX2-1 may be stored under its gene symbol or alias
-nkx_gene <- intersect(c("NKX2-1", "TTF1"), rownames(expr_tumor))
-
 if (length(nkx_gene) > 0) {
-  surv_df$nkx2_1 <- as.numeric(expr_tumor[nkx_gene[1], surv_df$sample_id])
+  reproducible(function(
+      cohort = dropdown("LUAD", choices = c("LUAD", "LUSC", "Both")),
+      gender = dropdown("All", choices = c("All", "male", "female")),
+      smoking = dropdown("All", choices = c("All", "Never", "Former", "Current")),
+      stage = dropdown("All", choices = c("All", "I", "II", "III", "IV")),
+      data = static(surv_df)
+    ) {
+      df <- data
+      if (cohort != "Both") df <- df[df$cohort == cohort, ]
+      if (gender != "All") df <- df[df$gender == gender, ]
+      if (smoking != "All") df <- df[!is.na(df$smoking) & df$smoking == smoking, ]
+      if (stage != "All") df <- df[!is.na(df$stage_simple) & df$stage_simple == stage, ]
 
-  df_luad <- surv_df |> filter(cohort == "LUAD")
-  df_luad$nkx_group <- ifelse(
-    df_luad$nkx2_1 > median(df_luad$nkx2_1, na.rm = TRUE),
-    "NKX2-1 High", "NKX2-1 Low"
+      df$group <- ifelse(
+        df$nkx2_1 > median(df$nkx2_1, na.rm = TRUE),
+        "NKX2-1 High", "NKX2-1 Low"
+      )
+
+      subtitle <- paste(c(
+        cohort,
+        if (gender != "All") gender,
+        if (smoking != "All") paste0(smoking, " smoker"),
+        if (stage != "All") paste0("Stage ", stage)
+      ), collapse = " | ")
+
+      fit <- survfit(Surv(os_time, os_event) ~ group, data = df)
+      publish(
+        ggsurvplot(
+          fit, data = df, pval = TRUE, risk.table = FALSE,
+          palette = c("#27ae60", "#8e44ad"),
+          title = "Overall survival by NKX2-1 expression",
+          subtitle = sprintf("%s (n=%d)", subtitle, nrow(df)),
+          xlab = "Days", ylab = "Survival probability",
+          legend.title = "NKX2-1",
+          risk.table.height = 0.25,
+          ggtheme = theme_minimal(base_size = 14)
+        ),
+        figure_name = "Survival by NKX2-1"
+      )
+    },
+    packages = c("survival", "survminer", "ggplot2"),
+    name = "NKX2-1 survival",
+    interactive = FALSE
   )
-
-  fit_nkx <- survfit(Surv(os_time, os_event) ~ nkx_group, data = df_luad)
-  ggsurvplot(
-    fit_nkx, data = df_luad, pval = TRUE, risk.table = TRUE,
-    palette = c("#27ae60", "#8e44ad"),
-    title = "Overall survival by NKX2-1 expression (LUAD only)",
-    subtitle = "NKX2-1 marks TRU subtype — high = alveolar differentiation, better prognosis",
-    xlab = "Days", ylab = "Survival probability",
-    legend.title = "NKX2-1",
-    risk.table.height = 0.25,
-    ggtheme = theme_minimal(base_size = 14)
-  ) %>% publish
 } else {
   cat("NKX2-1 not found in expression matrix\n")
 }
-```
-
-## EMT score and survival
-
-EMT-high tumors tend to be more invasive and to exclude cytotoxic T cells (Section 4).
-We test whether this translates to worse survival within each cancer type.
-
-```{r km-emt}
-surv_df <- surv_df |>
-  group_by(cohort) |>
-  mutate(emt_group = ifelse(
-    emt_score > median(emt_score, na.rm = TRUE),
-    "High (mesenchymal)", "Low (epithelial)"
-  )) |>
-  ungroup()
-
-for (coh in c("LUAD", "LUSC")) {
-  df <- surv_df |> filter(cohort == coh)
-  fit <- survfit(Surv(os_time, os_event) ~ emt_group, data = df)
-  ggsurvplot(
-    fit, data = df, pval = TRUE, risk.table = TRUE,
-    palette = c("#8e44ad", "#27ae60"),
-    title = sprintf("Overall survival by EMT score (%s)", coh),
-    xlab = "Days", ylab = "Survival probability",
-    legend.title = "EMT",
-    risk.table.height = 0.25,
-    ggtheme = theme_minimal(base_size = 14)
-  ) %>% publish
-}
-```
-
-## Multivariate Cox regression
-
-The Kaplan-Meier analyses above are univariate — they don't account for confounders.
-Stage and histology are strong clinical prognostic factors, so we need to ask: do the
-molecular scores add information *beyond* what stage and cancer type already tell us?
-
-A Cox proportional hazards model lets us estimate the hazard ratio (HR) for each
-covariate while adjusting for all others. An HR > 1 means higher values of that feature
-are associated with increased risk of death; HR < 1 means they're protective. The forest
-plot makes it easy to see which features cross the HR = 1 line (non-significant) vs.
-which are clearly displaced from it.
-
-```{r cox}
-surv_df$stage_numeric <- as.numeric(factor(
-  surv_df$stage_simple,
-  levels = c("I", "II", "III", "IV")
-))
-surv_df$is_lusc <- as.integer(surv_df$cohort == "LUSC")
-
-cox_fit <- coxph(
-  Surv(os_time, os_event) ~
-    stage_numeric + is_lusc + proliferation + emt_score +
-    immune_activation,
-  data = surv_df
-)
-
-cox_summary <- broom::tidy(cox_fit, conf.int = TRUE, exponentiate = TRUE)
-
-# Readable labels
-label_map <- c(
-  stage_numeric = "Stage (I-IV)",
-  is_lusc = "LUSC (vs LUAD)",
-  proliferation = "Proliferation",
-  emt_score = "EMT score",
-  immune_activation = "Immune activation"
-)
-cox_summary$label <- label_map[cox_summary$term]
-
-publish(
-  ggplot(cox_summary, aes(x = estimate, y = reorder(label, estimate))) +
-  geom_point(size = 3) +
-  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
-  labs(
-    title = "Multivariate Cox regression: hazard ratios",
-    subtitle = "Adjusted for stage, histology, and molecular scores",
-    x = "Hazard ratio (95% CI)",
-    y = NULL
-  ) +
-  scale_x_log10())
 ```
 
 # Session Info

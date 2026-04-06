@@ -8,7 +8,4 @@ QMD="tcga_lung_analysis.qmd"
 echo "Rendering HTML..."
 quarto render "$QMD" --to html
 
-echo "Rendering PDF..."
-quarto render "$QMD" --to pdf
-
 echo "Done."
