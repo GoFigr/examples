@@ -275,8 +275,6 @@ score_genes <- function(expr_mat, genes) {
 prolif_genes <- c("MKI67", "TOP2A", "CCNB1", "CCNA2", "CDK1", "CDK2", "AURKA",
                   "AURKB", "PLK1", "BUB1", "TTK", "CDC20", "FOXM1", "E2F1", "BIRC5")
 
-nkx_gene <- intersect(c("NKX2-1", "TTF1"), rownames(expr_tumor))
-
 clin_tumor$os_time <- coalesce(
   as.numeric(clin_tumor$days_to_death),
   as.numeric(clin_tumor$days_to_last_follow_up)
@@ -284,9 +282,6 @@ clin_tumor$os_time <- coalesce(
 clin_tumor$os_event <- as.integer(clin_tumor$vital_status == "Dead")
 clin_tumor$sample_id <- colnames(expr_tumor)
 clin_tumor$proliferation <- score_genes(expr_tumor, prolif_genes)
-if (length(nkx_gene) > 0) {
-  clin_tumor$nkx2_1 <- as.numeric(expr_tumor[nkx_gene[1], ])
-}
 
 # Simplify clinical covariates
 clin_tumor$stage_simple <- case_when(
@@ -320,7 +315,6 @@ surv_df <- data.frame(
   os_time = clin_tumor$os_time,
   os_event = clin_tumor$os_event,
   proliferation = clin_tumor$proliferation,
-  nkx2_1 = if (length(nkx_gene) > 0) clin_tumor$nkx2_1 else NA_real_,
   stringsAsFactors = FALSE
 ) |>
   filter(!is.na(os_time), os_time > 0, !is.na(os_event))
@@ -331,7 +325,7 @@ cat(sprintf("Samples with survival data: %d (events: %d)\n",
 
 ## Proliferation score
 
-The proliferation (mitotic index) score is the most robust transcriptomic prognostic
+The proliferation score is a robust transcriptomic prognostic
 marker in solid tumors (Gentles et al., Nat Med 2015). High proliferation = poor
 prognosis. Use the dropdowns to explore how the effect varies by clinical subgroup.
 
@@ -379,63 +373,6 @@ reproducible(function(
   packages = c("survival", "survminer", "ggplot2", "stats"),
   name = "Proliferation survival",
 )
-```
-
-## NKX2-1 (TTF-1) in LUAD
-
-NKX2-1 is the master transcription factor of alveolar differentiation and the single most
-validated prognostic gene in LUAD (Barletta et al., JCO 2009). High NKX2-1 marks the TRU
-(Terminal Respiratory Unit) subtype — well-differentiated tumors with the best outcomes.
-NKX2-1 is silenced in LUSC, so this defaults to LUAD-only.
-
-```{r km-nkx2-1}
-if (length(nkx_gene) > 0) {
-  reproducible(function(
-      cohort = dropdown("LUAD", choices = c("LUAD", "LUSC", "Both")),
-      gender = dropdown("All", choices = c("All", "male", "female")),
-      smoking = dropdown("All", choices = c("All", "Never", "Former", "Current")),
-      stage = dropdown("All", choices = c("All", "I", "II", "III", "IV")),
-      data = static(surv_df)
-    ) {
-      df <- data
-      if (cohort != "Both") df <- df[df$cohort == cohort, ]
-      if (gender != "All") df <- df[df$gender == gender, ]
-      if (smoking != "All") df <- df[!is.na(df$smoking) & df$smoking == smoking, ]
-      if (stage != "All") df <- df[!is.na(df$stage_simple) & df$stage_simple == stage, ]
-
-      df$group <- ifelse(
-        df$nkx2_1 > median(df$nkx2_1, na.rm = TRUE),
-        "NKX2-1 High", "NKX2-1 Low"
-      )
-
-      subtitle <- paste(c(
-        cohort,
-        if (gender != "All") gender,
-        if (smoking != "All") paste0(smoking, " smoker"),
-        if (stage != "All") paste0("Stage ", stage)
-      ), collapse = " | ")
-
-      fit <- survfit(Surv(os_time, os_event) ~ group, data = df)
-      publish(
-        ggsurvplot(
-          fit, data = df, pval = TRUE, risk.table = FALSE,
-          palette = c("#27ae60", "#8e44ad"),
-          title = "Overall survival by NKX2-1 expression",
-          subtitle = sprintf("%s (n=%d)", subtitle, nrow(df)),
-          xlab = "Days", ylab = "Survival probability",
-          legend.title = "NKX2-1",
-          risk.table.height = 0.25,
-          ggtheme = theme_minimal(base_size = 14)
-        ),
-        figure_name = "Survival by NKX2-1"
-      )
-    },
-    packages = c("survival", "survminer", "ggplot2", "stats"),
-    name = "NKX2-1 survival",
-  )
-} else {
-  cat("NKX2-1 not found in expression matrix\n")
-}
 ```
 
 # Session Info
