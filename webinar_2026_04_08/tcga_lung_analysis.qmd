@@ -43,11 +43,8 @@ share your figures at [app.gofigr.io](https://app.gofigr.io).
 
 ```{r gofigr}
 gofigR::enable(
-  workspace_name = "GoFigr Webinar (April 8, 2026)",
   analysis_name = "TCGA Lung Cancer Analysis (LUAD + LUSC)",
-  watermark = QR_WATERMARK,
   auto_assign = TRUE,
-  url="https://app-dev.gofigr.io"
 )
 ```
 
@@ -57,6 +54,13 @@ We work with two TCGA lung cancer cohorts: **LUAD** (Lung Adenocarcinoma) and **
 (Lung Squamous Cell Carcinoma) — the two most common subtypes of non-small cell lung
 cancer (NSCLC). The data contains RNA-Seq TPM values for ~1200 curated cancer and
 highly-expressed genes across ~1000 tumor samples.
+
+Notice how we use `gofigR::sync_file` to (1) store the file as an "Asset" in the GoFigr portal,
+and (2) link this specific file to every figure generated here.
+
+If that file ever changes, we will upload a new revision automatically. Your linkage from 
+figures to specific file versions remains bulletproof -- old figures still link to the
+specific older version that generated them.
 
 ```{r load-data}
 data_dir <- file.path(getwd(), "data")
@@ -93,6 +97,22 @@ cat(sprintf("Tumor samples: %d (%d LUAD, %d LUSC) | Genes: %d\n",
             sum(clin_tumor$cohort == "LUAD"),
             sum(clin_tumor$cohort == "LUSC"),
             nrow(expr_tumor)))
+
+# Export for the Python classifier notebook
+arrow::write_parquet(
+  as.data.frame(t(expr_tumor)),
+  file.path(data_dir, "expr_tumor.parquet")
+)
+arrow::write_parquet(
+  data.frame(
+    sample_id = colnames(expr_tumor),
+    cohort = clin_tumor$cohort,
+    gender = clin_tumor$gender,
+    stage = clin_tumor$ajcc_pathologic_stage,
+    stringsAsFactors = FALSE
+  ),
+  file.path(data_dir, "clinical_tumor.parquet")
+)
 ```
 
 # LUAD vs LUSC: Transcriptomic Differences
@@ -114,6 +134,10 @@ pca_df <- data.frame(
   PC2 = pca$x[, 2],
   cohort = clin_tumor$cohort
 )
+
+# Keep the top 30 PCs for downstream clustering
+n_pcs_max <- min(30, ncol(pca$x))
+pca_scores_df <- as.data.frame(pca$x[, seq_len(n_pcs_max)])
 
 p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = cohort)) +
   geom_point(alpha = 0.6, size = 2) +
@@ -225,11 +249,11 @@ notebook.
 reproducible(function(
     k = slider(3, min = 2, max = 6, step = 1),
     n_pcs = slider(20, min = 5, max = 30, step = 5),
-    pca_scores = static(pca$x),
+    pca_scores = static(pca_scores_df),
     umap_coords = static(umap_df[, c("UMAP1", "UMAP2")])
   ) {
     set.seed(42)
-    km <- kmeans(pca_scores[, 1:n_pcs], centers = k, nstart = 25, iter.max = 100)
+    km <- kmeans(as.matrix(pca_scores[, 1:n_pcs]), centers = k, nstart = 25, iter.max = 100)
     plot_df <- data.frame(umap_coords, cluster = factor(km$cluster))
 
     publish(
@@ -244,9 +268,9 @@ reproducible(function(
       figure_name = "K-means clusters on UMAP"
     )
   },
-  packages = c("ggplot2"),
+  packages = c("ggplot2", "stats"),
   name = "K-means clustering",
-  interactive=FALSE
+  interactive=FALSE # set to TRUE to show a shiny gadget. It's very experimental, but please try it and report issues!
 )
 ```
 
@@ -368,9 +392,8 @@ reproducible(function(
       figure_name = "Survival by proliferation"
     )
   },
-  packages = c("survival", "survminer", "ggplot2"),
+  packages = c("survival", "survminer", "ggplot2", "stats"),
   name = "Proliferation survival",
-  interactive = FALSE
 )
 ```
 
@@ -423,9 +446,8 @@ if (length(nkx_gene) > 0) {
         figure_name = "Survival by NKX2-1"
       )
     },
-    packages = c("survival", "survminer", "ggplot2"),
+    packages = c("survival", "survminer", "ggplot2", "stats"),
     name = "NKX2-1 survival",
-    interactive = FALSE
   )
 } else {
   cat("NKX2-1 not found in expression matrix\n")
