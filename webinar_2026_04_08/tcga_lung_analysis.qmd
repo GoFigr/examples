@@ -44,7 +44,7 @@ share your figures at [app.gofigr.io](https://app.gofigr.io).
 ```{r gofigr}
 gofigR::enable(
   analysis_name = "TCGA Lung Cancer Analysis (LUAD + LUSC)",
-  auto_assign = TRUE,
+  auto_assign = TRUE,  # NEW: uses AI to auto-caption your figures in the portal
 )
 ```
 
