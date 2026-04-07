@@ -97,22 +97,6 @@ cat(sprintf("Tumor samples: %d (%d LUAD, %d LUSC) | Genes: %d\n",
             sum(clin_tumor$cohort == "LUAD"),
             sum(clin_tumor$cohort == "LUSC"),
             nrow(expr_tumor)))
-
-# Export for the Python classifier notebook
-arrow::write_parquet(
-  as.data.frame(t(expr_tumor)),
-  file.path(data_dir, "expr_tumor.parquet")
-)
-arrow::write_parquet(
-  data.frame(
-    sample_id = colnames(expr_tumor),
-    cohort = clin_tumor$cohort,
-    gender = clin_tumor$gender,
-    stage = clin_tumor$ajcc_pathologic_stage,
-    stringsAsFactors = FALSE
-  ),
-  file.path(data_dir, "clinical_tumor.parquet")
-)
 ```
 
 # LUAD vs LUSC: Transcriptomic Differences

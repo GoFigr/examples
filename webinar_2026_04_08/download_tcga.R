@@ -10,6 +10,7 @@ BiocManager::install(c("TCGAbiolinks", "SummarizedExperiment"))
 
 library(TCGAbiolinks)
 library(SummarizedExperiment)
+library(arrow)
 
 ## --- Download / cache each cohort -------------------------------------------
 download_tcga_cohort <- function(project, cache_file) {
@@ -192,3 +193,36 @@ cat(sprintf("Matched %d / %d genes in combined LUAD/LUSC data\n",
 
 dir.create("data", showWarnings = FALSE)
 saveRDS(lung_se_subset, "data/TCGA-LUNG_TPM_SE_subset.rds")
+
+## --- Export tumor expression + clinical as parquet for the Python notebook --
+## The downstream Python classifier reads these directly, so we precompute them
+## here rather than in the Qmd.
+expr_raw <- assay(lung_se_subset, "tpm_unstrand")
+expr <- log2(expr_raw + 1)
+rownames(expr) <- make.unique(rowData(lung_se_subset)$gene_name)
+
+clinical <- as.data.frame(colData(lung_se_subset))
+tumor_idx <- clinical$sample_type == "Primary Tumor"
+expr_tumor <- expr[, tumor_idx]
+clin_tumor <- clinical[tumor_idx, ]
+
+cat(sprintf("Tumor samples: %d (%d LUAD, %d LUSC) | Genes: %d\n",
+            ncol(expr_tumor),
+            sum(clin_tumor$cohort == "LUAD"),
+            sum(clin_tumor$cohort == "LUSC"),
+            nrow(expr_tumor)))
+
+write_parquet(
+  as.data.frame(t(expr_tumor)),
+  "data/expr_tumor.parquet"
+)
+write_parquet(
+  data.frame(
+    sample_id = colnames(expr_tumor),
+    cohort = clin_tumor$cohort,
+    gender = clin_tumor$gender,
+    stage = clin_tumor$ajcc_pathologic_stage,
+    stringsAsFactors = FALSE
+  ),
+  "data/clinical_tumor.parquet"
+)
