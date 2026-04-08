@@ -43,8 +43,7 @@ share your figures at [app.gofigr.io](https://app.gofigr.io).
 
 ```{r gofigr}
 gofigR::enable(
-  analysis_name = "TCGA Lung Cancer Analysis (LUAD + LUSC)",
-  auto_assign = TRUE,  # NEW: uses AI to auto-caption your figures in the portal
+  analysis_name = "TCGA Lung Cancer Analysis (LUAD + LUSC)"
 )
 ```
 
@@ -76,6 +75,7 @@ if (!file.exists(rds_path)) {
   )
 }
 
+# GoFigr can track and version your data for you!
 gofigR::sync_file(rds_path)
 
 se <- readRDS(rds_path)

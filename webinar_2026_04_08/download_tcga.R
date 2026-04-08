@@ -1,7 +1,7 @@
 ## This script downloads TCGA-LUAD and TCGA-LUSC RNA-Seq data from GDC and
 ## subsets to curated cancer genes + top 1000 expressed genes. If you'd rather
 ## skip this step, a pre-built RDS file is available at:
-##   https://cdn.gofigr.io/data/TCGA-LUAD_TPM_SE_cancer_genes.rds
+##   https://cdn.gofigr.io/data/TCGA-LUNG_TPM_SE_subset.rds
 
 if (!requireNamespace("BiocManager", quietly = TRUE))
   install.packages("BiocManager")
@@ -212,6 +212,8 @@ cat(sprintf("Tumor samples: %d (%d LUAD, %d LUSC) | Genes: %d\n",
             sum(clin_tumor$cohort == "LUSC"),
             nrow(expr_tumor)))
 
+
+# Export to Parquet for use in Python
 write_parquet(
   as.data.frame(t(expr_tumor)),
   "data/expr_tumor.parquet"
