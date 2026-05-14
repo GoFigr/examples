@@ -1,0 +1,383 @@
+---
+title: "TCGA Lung Cancer: LUAD vs LUSC"
+author: "GoFigr Webinar"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+    fig-width: 10
+    fig-height: 7
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7,
+  dpi = 150
+)
+```
+
+# Setup
+
+```{r libraries}
+library(gofigR)
+library(SummarizedExperiment)
+library(ggplot2)
+library(dplyr)
+library(uwot)
+library(survival)
+library(survminer)
+library(ggrepel)
+```
+
+## Enabling GoFigr
+
+[GoFigr](https://gofigr.io) automatically captures, versions, and indexes every figure
+you produce. Once enabled, every plot is published — no extra calls needed. Browse and
+share your figures at [app.gofigr.io](https://app.gofigr.io).
+
+```{r gofigr}
+gofigR::enable(
+  #analysis_name = "TCGA Lung Cancer Analysis (LUAD + LUSC)",
+  #auto_assign = TRUE,  # NEW: uses AI to auto-caption your figures in the portal
+)
+```
+
+# Data Loading
+
+We work with two TCGA lung cancer cohorts: **LUAD** (Lung Adenocarcinoma) and **LUSC**
+(Lung Squamous Cell Carcinoma) — the two most common subtypes of non-small cell lung
+cancer (NSCLC). The data contains RNA-Seq TPM values for ~1200 curated cancer and
+highly-expressed genes across ~1000 tumor samples.
+
+Notice how we use `gofigR::sync_file` to (1) store the file as an "Asset" in the GoFigr portal,
+and (2) link this specific file to every figure generated here.
+
+If that file ever changes, we will upload a new revision automatically. Your linkage from 
+figures to specific file versions remains bulletproof -- old figures still link to the
+specific older version that generated them.
+
+```{r load-data}
+data_dir <- file.path(getwd(), "data")
+rds_path <- file.path(data_dir, "TCGA-LUNG_TPM_SE_subset.rds")
+
+if (!file.exists(rds_path)) {
+  dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
+  message("Downloading TCGA data...")
+  download.file(
+    "https://cdn.gofigr.io/data/TCGA-LUNG_TPM_SE_subset.rds",
+    rds_path,
+    mode = "wb"
+  )
+}
+
+# GoFigr can track and version your data for you!
+gofigR::sync_file(rds_path)
+
+se <- readRDS(rds_path)
+
+# Log-transform and map to gene symbols
+expr_raw <- assay(se, "tpm_unstrand")
+expr <- log2(expr_raw + 1)
+rownames(expr) <- make.unique(rowData(se)$gene_name)
+
+clinical <- as.data.frame(colData(se))
+
+# Restrict to primary tumors
+tumor_idx <- clinical$sample_type == "Primary Tumor"
+expr_tumor <- expr[, tumor_idx]
+clin_tumor <- clinical[tumor_idx, ]
+
+cat(sprintf("Tumor samples: %d (%d LUAD, %d LUSC) | Genes: %d\n",
+            ncol(expr_tumor),
+            sum(clin_tumor$cohort == "LUAD"),
+            sum(clin_tumor$cohort == "LUSC"),
+            nrow(expr_tumor)))
+```
+
+# LUAD vs LUSC: Transcriptomic Differences
+
+## PCA
+
+PCA projects the high-dimensional expression data onto axes of maximum variance. With
+two distinct cancer types, we expect the dominant axis to separate LUAD from LUSC.
+
+```{r pca}
+gene_var <- apply(expr_tumor, 1, var, na.rm = TRUE)
+expr_filt <- expr_tumor[gene_var > 0, ]
+
+pca <- prcomp(t(expr_filt), center = TRUE, scale. = FALSE)
+pct_var <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
+
+pca_df <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  cohort = clin_tumor$cohort
+)
+
+# Keep the top 30 PCs for downstream clustering
+n_pcs_max <- min(30, ncol(pca$x))
+pca_scores_df <- as.data.frame(pca$x[, seq_len(n_pcs_max)])
+
+p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = cohort)) +
+  geom_point(alpha = 0.6, size = 2) +
+  labs(
+    x = sprintf("PC1 (%.1f%%)", pct_var[1]),
+    y = sprintf("PC2 (%.1f%%)", pct_var[2]),
+    title = "PCA of TCGA lung tumors (LUAD + LUSC)",
+    color = "Cohort"
+  )
+p %>% publish
+```
+
+## Top PCA loadings
+
+The top PC1 loadings reveal what drives the separation: squamous markers (keratins, TP63,
+SOX2) vs adenocarcinoma markers (NKX2-1/TTF-1, surfactant proteins, NAPSA).
+
+```{r pca-loadings}
+loadings <- as.data.frame(pca$rotation[, 1:3])
+loadings$gene <- rownames(loadings)
+
+top_pc1 <- loadings |>
+  arrange(desc(abs(PC1))) |>
+  head(15) |>
+  mutate(gene = reorder(gene, abs(PC1)))
+
+publish({ggplot(top_pc1, aes(x = PC1, y = gene)) +
+  geom_col(aes(fill = PC1 > 0), show.legend = FALSE) +
+  scale_fill_manual(values = c("TRUE" = "#c0392b", "FALSE" = "#2980b9")) +
+  labs(
+    title = "Top 15 genes driving PC1",
+    x = "Loading on PC1",
+    y = NULL
+  )})
+```
+
+## Volcano plot
+
+We directly quantify expression differences with a Welch t-test per gene.
+
+```{r de-luad-lusc}
+is_luad <- clin_tumor$cohort == "LUAD"
+is_lusc <- clin_tumor$cohort == "LUSC"
+
+de_results <- data.frame(
+  gene = rownames(expr_filt),
+  log2fc = rowMeans(expr_filt[, is_lusc]) - rowMeans(expr_filt[, is_luad]),
+  pval = sapply(seq_len(nrow(expr_filt)), function(i) {
+    t.test(expr_filt[i, is_lusc], expr_filt[i, is_luad])$p.value
+  })
+)
+de_results$padj <- p.adjust(de_results$pval, method = "BH")
+de_results$neg_log10p <- -log10(de_results$padj)
+de_results$direction <- case_when(
+  de_results$padj < 0.01 & de_results$log2fc > 1 ~ "Up in LUSC",
+  de_results$padj < 0.01 & de_results$log2fc < -1 ~ "Up in LUAD",
+  TRUE ~ "NS"
+)
+
+top_de <- de_results |>
+  filter(direction != "NS") |>
+  arrange(desc(abs(log2fc))) |>
+  head(20)
+
+publish(ggplot(de_results, aes(x = log2fc, y = neg_log10p)) +
+  geom_point(aes(color = direction), alpha = 0.5, size = 1.5) +
+  scale_color_manual(values = c("Up in LUSC" = "#c0392b", "Up in LUAD" = "#2166ac",
+                                "NS" = "grey60")) +
+  geom_text_repel(data = top_de, aes(label = gene),
+                  size = 3, max.overlaps = 20) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "grey40") +
+  geom_hline(yintercept = -log10(0.01), linetype = "dashed", color = "grey40") +
+  labs(
+    title = "Differential expression: LUSC vs LUAD",
+    subtitle = "Welch t-test on log2(TPM+1); BH-adjusted p-values",
+    x = "log2 fold-change (LUSC - LUAD)",
+    y = "-log10(adjusted p-value)"
+  ),
+  data=de_results)
+```
+
+## UMAP
+
+UMAP preserves local neighborhood structure, often revealing clusters that PCA compresses.
+
+```{r umap}
+set.seed(42)
+umap_res <- umap(t(expr_filt), n_neighbors = 50, min_dist = 0.3, metric = "cosine")
+
+umap_df <- data.frame(
+  UMAP1 = umap_res[, 1],
+  UMAP2 = umap_res[, 2],
+  cohort = clin_tumor$cohort
+)
+
+p <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = cohort)) +
+  geom_point(alpha = 0.6, size = 2) +
+  labs(title = "UMAP embedding of TCGA lung tumors", color = "Cohort")
+publish(p)
+```
+
+## K-means clustering
+
+We apply k-means in PCA space. This is wrapped in `reproducible()` — a GoFigr feature
+that lets viewers adjust k and n_pcs interactively in the portal without re-running the
+notebook.
+
+```{r kmeans}
+reproducible(function(
+    k = slider(3, min = 2, max = 6, step = 1),
+    n_pcs = slider(20, min = 5, max = 30, step = 5),
+    pca_scores = static(pca_scores_df),
+    umap_coords = static(umap_df[, c("UMAP1", "UMAP2")])
+  ) {
+    set.seed(42)
+    km <- kmeans(as.matrix(pca_scores[, 1:n_pcs]), centers = k, nstart = 25, iter.max = 100)
+    plot_df <- data.frame(umap_coords, cluster = factor(km$cluster))
+
+    publish(
+      ggplot(plot_df, aes(x = UMAP1, y = UMAP2, color = cluster)) +
+        geom_point(alpha = 0.6, size = 2) +
+        scale_color_brewer(palette = "Set1") +
+        labs(
+          title = "Unsupervised clusters on UMAP",
+          subtitle = sprintf("k-means (k=%d) on top %d PCs", k, n_pcs),
+          color = "Cluster"
+        ),
+      figure_name = "K-means clusters on UMAP"
+    )
+  },
+  packages = c("ggplot2", "stats"),
+  name = "K-means clustering",
+  interactive=FALSE # set to TRUE to show a shiny gadget. It's very experimental, but please try it and report issues!
+)
+```
+
+# Survival Analysis
+
+Do these molecular differences predict patient outcomes? We test two well-validated
+prognostic signatures, wrapped in `reproducible()` so viewers can re-stratify by
+clinical covariates (cohort, gender, smoking status, stage) directly in the GoFigr
+portal.
+
+```{r survival-prep}
+score_genes <- function(expr_mat, genes) {
+  available <- genes[genes %in% rownames(expr_mat)]
+  if (length(available) == 0) return(rep(NA, ncol(expr_mat)))
+  colMeans(expr_mat[available, , drop = FALSE], na.rm = TRUE)
+}
+
+prolif_genes <- c("MKI67", "TOP2A", "CCNB1", "CCNA2", "CDK1", "CDK2", "AURKA",
+                  "AURKB", "PLK1", "BUB1", "TTK", "CDC20", "FOXM1", "E2F1", "BIRC5")
+
+clin_tumor$os_time <- coalesce(
+  as.numeric(clin_tumor$days_to_death),
+  as.numeric(clin_tumor$days_to_last_follow_up)
+)
+clin_tumor$os_event <- as.integer(clin_tumor$vital_status == "Dead")
+clin_tumor$sample_id <- colnames(expr_tumor)
+clin_tumor$proliferation <- score_genes(expr_tumor, prolif_genes)
+
+# Simplify clinical covariates
+clin_tumor$stage_simple <- case_when(
+  grepl("Stage I[^IV]|Stage IA|Stage IB|^Stage I$", clin_tumor$ajcc_pathologic_stage) ~ "I",
+  grepl("Stage II", clin_tumor$ajcc_pathologic_stage) ~ "II",
+  grepl("Stage III", clin_tumor$ajcc_pathologic_stage) ~ "III",
+  grepl("Stage IV", clin_tumor$ajcc_pathologic_stage) ~ "IV",
+  TRUE ~ NA_character_
+)
+
+clin_tumor$smoking <- case_when(
+  clin_tumor$tobacco_smoking_status == "Lifelong Non-Smoker" ~ "Never",
+  grepl("Current Smoker", clin_tumor$tobacco_smoking_status) ~ "Current",
+  grepl("Reformed", clin_tumor$tobacco_smoking_status) ~ "Former",
+  TRUE ~ NA_character_
+)
+
+clin_tumor$age_group <- ifelse(
+  as.numeric(clin_tumor$age_at_diagnosis) / 365.25 >= 67,
+  ">=67", "<67"
+)
+
+# Build a clean survival data frame with only the columns we need —
+# the full colData has list/raw columns that can't be serialized by reproducible()
+surv_df <- data.frame(
+  sample_id = clin_tumor$sample_id,
+  cohort = clin_tumor$cohort,
+  gender = clin_tumor$gender,
+  stage_simple = clin_tumor$stage_simple,
+  smoking = clin_tumor$smoking,
+  os_time = clin_tumor$os_time,
+  os_event = clin_tumor$os_event,
+  proliferation = clin_tumor$proliferation,
+  stringsAsFactors = FALSE
+) |>
+  filter(!is.na(os_time), os_time > 0, !is.na(os_event))
+
+cat(sprintf("Samples with survival data: %d (events: %d)\n",
+            nrow(surv_df), sum(surv_df$os_event)))
+```
+
+## Proliferation score
+
+The proliferation score is a robust transcriptomic prognostic
+marker in solid tumors (Gentles et al., Nat Med 2015). High proliferation = poor
+prognosis. Use the dropdowns to explore how the effect varies by clinical subgroup.
+
+```{r km-proliferation}
+reproducible(function(
+    cohort = dropdown("LUAD", choices = c("LUAD", "LUSC", "Both")),
+    gender = dropdown("All", choices = c("All", "male", "female")),
+    smoking = dropdown("All", choices = c("All", "Never", "Former", "Current")),
+    stage = dropdown("All", choices = c("All", "I", "II", "III", "IV")),
+    data = static(surv_df)
+  ) {
+    df <- data
+    if (cohort != "Both") df <- df[df$cohort == cohort, ]
+    if (gender != "All") df <- df[df$gender == gender, ]
+    if (smoking != "All") df <- df[!is.na(df$smoking) & df$smoking == smoking, ]
+    if (stage != "All") df <- df[!is.na(df$stage_simple) & df$stage_simple == stage, ]
+
+    df$group <- ifelse(
+      df$proliferation > median(df$proliferation, na.rm = TRUE),
+      "High", "Low"
+    )
+
+    subtitle <- paste(c(
+      cohort,
+      if (gender != "All") gender,
+      if (smoking != "All") paste0(smoking, " smoker"),
+      if (stage != "All") paste0("Stage ", stage)
+    ), collapse = " | ")
+
+    fit <- survfit(Surv(os_time, os_event) ~ group, data = df)
+    publish(
+      ggsurvplot(
+        fit, data = df, pval = TRUE, risk.table = FALSE,
+        palette = c("#c0392b", "#2980b9"),
+        title = "Overall survival by proliferation score",
+        subtitle = sprintf("%s (n=%d)", subtitle, nrow(df)),
+        xlab = "Days", ylab = "Survival probability",
+        legend.title = "Proliferation",
+        risk.table.height = 0.25,
+        ggtheme = theme_minimal(base_size = 14)
+      ),
+      figure_name = "Survival by proliferation"
+    )
+  },
+  packages = c("survival", "survminer", "ggplot2", "stats"),
+  name = "Proliferation survival",
+)
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
