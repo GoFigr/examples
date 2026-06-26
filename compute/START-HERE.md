@@ -4,38 +4,21 @@ This is your own cloud machine, running JupyterLab, VS Code, and R — with the
 GoFigr client **already installed and signed in**. Anything you save here stays
 here: your files persist across restarts.
 
-## Publish your first figure
+## Try it — publish your first figure
 
-You don't need to set up credentials — this box is already connected to your
-GoFigr account. In a notebook cell:
+You don't need to set up credentials: this machine is already connected to your
+GoFigr account. The quickest way to see it work is the bundled example — open
+**[`examples/tcga_lung_classifier.ipynb`](examples/tcga_lung_classifier.ipynb)**
+and run it top to bottom.
 
-```python
-%load_ext gofigr
+As it runs, each figure is published to your GoFigr account together with the
+code, data, and environment that produced it — so every figure is reproducible
+and traceable back to its source. Open [gofigr.io](https://gofigr.io) to watch
+them appear.
 
-configure(analysis=FindByName("My First Analysis", create=True))
-
-import matplotlib.pyplot as plt
-fig, ax = plt.subplots()
-ax.plot([0, 1, 2, 3], [0, 1, 4, 9])
-ax.set_title("Hello, GoFigr")
-
-publish(fig, target="My first figure")
-```
-
-Run it, then open [gofigr.io](https://gofigr.io) — your figure is there, with the
-code, data, and environment that produced it captured alongside it. That's the
-whole idea: every figure you publish is reproducible and traceable back to its
-source.
-
-**Working in R?** `library(gofigR)` is installed too — see the
-`tcga_lung_analysis.qmd` example.
-
-## Explore the examples
-
-The `examples/` folder next to this file has a complete, runnable analysis — a
-TCGA lung-cancer classifier (Python) and report (R) — showing GoFigr used in a
-real workflow. Open `examples/tcga_lung_classifier.ipynb` and run it top to
-bottom.
+**Working in R?** `library(gofigR)` is installed too — see
+**[`examples/tcga_lung_analysis.qmd`](examples/tcga_lung_analysis.qmd)**, the
+same analysis as a Quarto report.
 
 ## Good to know
 
